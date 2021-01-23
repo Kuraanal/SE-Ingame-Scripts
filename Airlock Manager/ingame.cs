@@ -1,21 +1,23 @@
-/*
- * R e a d m e
- * -----------
- * 
+/*Change this to represent the pressure in the airlock before it open the outer doors.
+ *
+ * - Leave as is if you want vacuum.
+ * - Change to your planet Air Pressure level
+ *
  */
+float targetOuterPressure = 0.05f;
 
-
-private readonly MyIni _ini = new MyIni();
-private readonly MyCommandLine _commandLine= new MyCommandLine();
-private MyIniParseResult _iniResult;
+readonly MyIni _ini = new MyIni();
+readonly MyCommandLine _commandLine= new MyCommandLine();
+MyIniParseResult _iniResult;
 
 readonly Dictionary<string, Airlock> airlocks = new Dictionary<string, Airlock>(StringComparer.CurrentCultureIgnoreCase);
-
+IMyTextSurface _pbPanel;
 
 public Program()
 {
     Runtime.UpdateFrequency = UpdateFrequency.Update10 | UpdateFrequency.Update100;
-    CreateAirlocks();
+    GetAirlocks();
+    _pbPanel = Me.GetSurface(0);
 }
 
 public void Save()
@@ -68,18 +70,19 @@ public void Main(string argument, UpdateType updateSource)
     }
     if ((updateSource & UpdateType.Update100) != 0)
     {
+        StringBuilder _output = new StringBuilder("AIRLOCK STATUS");
+        _output.AppendLine();
         foreach (var airlock in airlocks)
         {
-            Echo("Airlock: " + airlock.Key.ToString());
-            Echo("pressure: " + airlock.Value.GetAirlockPressure());
-            Echo("Current State: " + airlock.Value.CurrentState.ToString());
-            Echo("Target State: " + airlock.Value.TargetState.ToString());
-            Echo("");
+            _output.AppendLine("Airlock: " + airlock.Key.ToString() + "|| Pressure: " + airlock.Value.GetAirlockPressure());
+            _output.AppendLine("Current State: " + airlock.Value.CurrentState.ToString() + "|| Target State: " + airlock.Value.TargetState.ToString());
+            _output.AppendLine();
         }
+        _pbPanel.WriteText(_output.ToString());
     }
 }
 
-public void CreateAirlocks()
+public void GetAirlocks()
 {
     List<string> airlocksNames = new List<string>();
     List<IMyFunctionalBlock> matchingBlocks = new List<IMyFunctionalBlock>();
@@ -99,7 +102,7 @@ public void CreateAirlocks()
         List<IMyFunctionalBlock> airlockBlocks = new List<IMyFunctionalBlock>();
         airlockBlocks = matchingBlocks.Where(block => block.CustomData.Contains("name=" + airlockName)).ToList();
 
-        Airlock thisAirlock = new Airlock(airlockBlocks, this);
+        Airlock thisAirlock = new Airlock(airlockBlocks, targetOuterPressure);
         airlocks.Add(airlockName, thisAirlock);
     });
 }
@@ -120,8 +123,6 @@ public class Airlock
         EMERGENCY_CLOSED = 100
     };
 
-    public MyGridProgram program;
-
     private const string POSITION_OUTER_NAME = "Outer";
     private const string POSITION_INNER_NAME = "Inner";
 
@@ -131,7 +132,7 @@ public class Airlock
     private const float LIGHT_BLINK_LENGTH = 50.0f;
 
     private const float TARGET_INNER_PRESSURE = 0.75f;
-    private const float TARGET_OUTER_PRESSURE = 0.71f;
+    private float TARGET_OUTER_PRESSURE = 0.05f;
 
     private const int TICKS_MIN_TIME = 100;
     private int ticksSinceLastChange = 0;
@@ -139,11 +140,11 @@ public class Airlock
     private AirlockState currentState = AirlockState.CYCLE_OUT;
     private AirlockState targetState = AirlockState.CYCLED_OUT;
 
-    private List<IMyDoor> _innerDoors = new List<IMyDoor>();
-    private List<IMyDoor> _outerDoors = new List<IMyDoor>();
-    private List<IMyLightingBlock> _lights = new List<IMyLightingBlock>();
-    private List<IMyAirVent> _vents = new List<IMyAirVent>();
-    private List<IMyButtonPanel> _panels = new List<IMyButtonPanel>();
+    private readonly List<IMyDoor> _innerDoors = new List<IMyDoor>();
+    private readonly List<IMyDoor> _outerDoors = new List<IMyDoor>();
+    private readonly List<IMyLightingBlock> _lights = new List<IMyLightingBlock>();
+    private readonly List<IMyAirVent> _vents = new List<IMyAirVent>();
+    private readonly List<IMyButtonPanel> _panels = new List<IMyButtonPanel>();
 
     private readonly MyIni _blockIni = new MyIni();
     private MyIniParseResult iniResult;
@@ -157,9 +158,9 @@ public class Airlock
     }
 
 
-    public Airlock(List<IMyFunctionalBlock> blocks, MyGridProgram prog)
+    public Airlock(List<IMyFunctionalBlock> blocks, float targetOuterPressure)
     {
-        program = prog;
+        TARGET_OUTER_PRESSURE = targetOuterPressure;
         SetAirlockBlocks(blocks);
         ChangeState(AirlockState.CYCLED_OUT);
     }
@@ -181,7 +182,7 @@ public class Airlock
                         if (GetAirlockPressure() > TARGET_OUTER_PRESSURE)
                             break;
                     }
-                    this.currentState = AirlockState.CYCLED_OUT;
+                    currentState = AirlockState.CYCLED_OUT;
                     SetOuterDoors(DoorStatus.Open);
                     break;
                 case AirlockState.PRESSURIZING: // innerDoors = closed, outerDoors = closed, vents = ON & DEPRESSURIZING = OFF {Check for pressure = 1}
@@ -191,20 +192,21 @@ public class Airlock
                     });
                     if (GetAirlockPressure() < TARGET_INNER_PRESSURE)
                         break;
-                    this.currentState = AirlockState.CYCLED_IN;
+                    currentState = AirlockState.CYCLED_IN;
                     break;
                 case AirlockState.CYCLE_IN: // innerDoors = closed, outerDoors = closing, vents = OFF {check for doors = closed}
                     SetOuterDoors(DoorStatus.Closed);
                     SetWarningLights();
                     if (!CheckOuterDoorState(DoorStatus.Closed))
                         break;
-                    this.currentState = AirlockState.PRESSURIZING;
+                    currentState = AirlockState.PRESSURIZING;
+                    disableDoors(_outerDoors);
                     break;
                 case AirlockState.CYCLED_IN: // innerDoors = opened, outerDoors = closed, vents = OFF
                     SetInnerDoors(DoorStatus.Open);
                     if (!CheckInnerDoorState(DoorStatus.Open))
                         break;
-                    this.DisableBlocks();
+                    DisableBlocks();
                     SetReadyLights();
                     break;
                 case AirlockState.CYCLE_OUT: // innerDoors = closing, outerDoors = closed, vents = OFF {check for doors = closed}
@@ -212,8 +214,9 @@ public class Airlock
                     SetInnerDoors(DoorStatus.Closed);
                     if (!CheckInnerDoorState(DoorStatus.Closed))
                         break;
-                    this.currentState = AirlockState.DEPRESSURIZING;
-                    this.ticksSinceLastChange = 0;
+                    currentState = AirlockState.DEPRESSURIZING;
+                    ticksSinceLastChange = 0;
+                    disableDoors(_innerDoors);
                     break;
                 case AirlockState.CYCLED_OUT: // innerDoors = closed, outerDoors = opened, vents = OFF
                     if (!CheckOuterDoorState(DoorStatus.Open))
@@ -227,7 +230,7 @@ public class Airlock
                     SetOuterDoors(DoorStatus.Open);
                     if (!CheckInnerDoorState(DoorStatus.Open) || !CheckOuterDoorState(DoorStatus.Open))
                         break;
-                    this.currentState = AirlockState.EMERGENCY_OPENED;
+                    currentState = AirlockState.EMERGENCY_OPENED;
                     break;
                 case AirlockState.EMERGENCY_OPENED: // innerDoors = opened, outerDoors = opened, vents = OFF
                     DisableBlocks();
@@ -238,7 +241,7 @@ public class Airlock
                     SetOuterDoors(DoorStatus.Closed);
                     if (!CheckInnerDoorState(DoorStatus.Closed) || !CheckOuterDoorState(DoorStatus.Closed))
                         break;
-                    this.currentState = AirlockState.EMERGENCY_CLOSED;
+                    currentState = AirlockState.EMERGENCY_CLOSED;
                     break;
                 case AirlockState.EMERGENCY_CLOSED: // innerDoors = closed, outerDoors = closed, vents = OFF
                     DisableBlocks();
@@ -252,7 +255,6 @@ public class Airlock
     public void ChangeState(AirlockState state)
     {
         targetState = state;
-
         switch (state)
         {
             case AirlockState.CYCLED_IN:
@@ -283,16 +285,16 @@ public class Airlock
                     throw new Exception(iniResult.ToString());
 
                 if (_blockIni.Get("Airlock", "POSITION").ToString() == POSITION_INNER_NAME)
-                    this._innerDoors.Add(block as IMyDoor);
+                    _innerDoors.Add(block as IMyDoor);
                 else if (_blockIni.Get("Airlock", "POSITION").ToString() == POSITION_OUTER_NAME)
-                    this._outerDoors.Add(block as IMyDoor);
+                    _outerDoors.Add(block as IMyDoor);
             }
             else if (block is IMyLightingBlock)
-                this._lights.Add(block as IMyLightingBlock);
+                _lights.Add(block as IMyLightingBlock);
             else if (block is IMyAirVent)
-                this._vents.Add(block as IMyAirVent);
+                _vents.Add(block as IMyAirVent);
             else if (block is IMyButtonPanel)
-                this._panels.Add(block as IMyButtonPanel);
+                _panels.Add(block as IMyButtonPanel);
         });
     }
 
@@ -341,6 +343,16 @@ public class Airlock
                 door.OpenDoor();
             }
         });
+    }
+
+    private void enableDoors(List<IMyDoor> doors)
+    {
+        doors.ForEach(block => block.Enabled = true);
+    }
+
+    private void disableDoors(List<IMyDoor> doors)
+    {
+        doors.ForEach(block => block.Enabled = false);
     }
 
     private bool CheckInnerDoorState(DoorStatus targetDoorState)
@@ -425,10 +437,14 @@ public class Airlock
 
     private void DisableBlocks()
     {
-
         _innerDoors.ForEach(door => door.Enabled = false);
         _outerDoors.ForEach(door => door.Enabled = false);
         _vents.ForEach(vent => vent.Enabled = false);
+    }
+
+    public void SetTargetOuterPressure(float pressure)
+    {
+        TARGET_OUTER_PRESSURE = pressure;
     }
 
 }
